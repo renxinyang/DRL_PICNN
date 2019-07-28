@@ -2,8 +2,7 @@ import os
 
 import numpy as np
 import tensorflow as tf
-
-import ddpg_nets_dm_conv
+import numpy.random as npr
 from replay_memory import ReplayMemory
 
 flags = tf.app.flags
@@ -14,11 +13,24 @@ FLAGS = flags.FLAGS
 #
 class Agent:
 
-    def __init__(self, dimO, dimA):
+    def __init__(self, dimO, dimA,num_layer,num_nodes):
+        self.dimA = dimA[0]
         dimA = list(dimA)
         dimO = list(dimO)
-
-        nets = ddpg_nets_dm_conv
+        if num_layer == 2:
+            if num_nodes == 1:
+                import ddpg_nets_dm_conv2_1
+                nets = ddpg_nets_dm_conv2_1
+            elif num_nodes == 2:
+                import ddpg_nets_dm_conv2_2
+                nets = ddpg_nets_dm_conv2_2
+        elif num_layer == 3:
+            if num_nodes == 1:
+                import ddpg_nets_dm_conv3_1
+                nets = ddpg_nets_dm_conv3_1
+            elif num_nodes == 2:
+                import ddpg_nets_dm_conv3_2
+                nets = ddpg_nets_dm_conv3_2
 
         tau = FLAGS.tau
         discount = FLAGS.discount
@@ -42,6 +54,10 @@ class Agent:
         #
         self.theta_p = nets.theta_p(dimO, dimA, FLAGS.l1size, FLAGS.l2size)
         self.theta_q = nets.theta_q(dimO, dimA, FLAGS.l1size, FLAGS.l2size)
+       # self.thetaq_cvx_ = [v for v in self.theta_q
+                           # if 'conv' in v.name]
+        #self.makeCvx = [v.assign(-tf.abs(v)) for v in self.thetaq_cvx_]
+        #self.proj = [v.assign(tf.minimum(v, 0)) for v in self.thetaq_cvx_]
         self.theta_pt, update_pt = exponential_moving_averages(self.theta_p, tau)
         self.theta_qt, update_qt = exponential_moving_averages(self.theta_q, tau)
 
@@ -49,11 +65,12 @@ class Agent:
         act_test = nets.policy(obs, self.theta_p)
 
         # explore
-        noise_init = tf.zeros([1] + dimA)
-        noise_var = tf.Variable(noise_init)
-        self.ou_reset = noise_var.assign(noise_init)
-        noise = noise_var.assign_sub((outheta) * noise_var - tf.random_normal(dimA, stddev=ousigma))
-        act_expl = act_test + noise
+        self.epsilon = 1
+        self.noise = np.zeros(self.dimA)
+        self.noise -= FLAGS.outheta*self.noise - \
+                              FLAGS.ousigma*npr.randn(self.dimA)
+        act_expl = act_test +self.epsilon* self.noise
+        #self.epsilon -= 1/5000000
 
         # test
         q = nets.qfunction(obs, act_test, self.theta_q)
@@ -107,7 +124,7 @@ class Agent:
         with self.sess.as_default():
             self._act_test = Fun(obs, act_test)
             self._act_expl = Fun(obs, act_expl)
-            self._reset = Fun([], self.ou_reset)
+            #self._reset = Fun([], self.ou_reset)
             self._train = Fun([obs, act_train, rew, obs2, term2], [train_p, train_q, loss_q], summary_list, summary_writer)
 
         # initialize tf variables
@@ -117,13 +134,14 @@ class Agent:
             self.saver.restore(self.sess, ckpt)
         else:
             self.sess.run(tf.initialize_all_variables())
+            #self.sess.run(self.makeCvx)
 
         self.sess.graph.finalize()
 
         self.t = 0  # global training time (number of observations)
 
     def reset(self, obs):
-        self._reset()
+        self.noise = np.zeros(self.dimA)
         self.observation = obs  # initial observation
 
     def act(self, test=False):
@@ -150,6 +168,7 @@ class Agent:
     def train(self):
         obs, act, rew, ob2, term2, info = self.rm.minibatch(size=FLAGS.bsize)
         _, _, loss = self._train(obs, act, rew, ob2, term2, log=FLAGS.summary, global_step=self.t)
+        #self.sess.run(self.proj)
         return loss
 
 
